@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using iTextSharp.text.pdf;
 using iTextSharp.text.pdf.parser;
 using System.Windows.Forms;
+using System.Threading.Tasks;
 
 namespace TextSearcher
 {
@@ -79,20 +80,25 @@ namespace TextSearcher
                     fileText = null;
                     break;
             }
-            return fileText;
+            return Regex.Replace(fileText, @"\r\n", "\n");
         }
 
-        public int[] GetAllMatchIndexes()
+        public List<int> GetAllMatchIndexes()
         {
             List<int> indexes = new List<int>();
 
             Regex regex = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant);
             foreach (Match match in regex.Matches(mainText))
             {
+                if(match.Value[0] == ' ')
+                {
+                    indexes.Add(match.Index + 1);
+                    continue;
+                }
                 indexes.Add(match.Index);
             }
 
-            return indexes.ToArray();
+            return indexes;
         }
 
         private string GetPattern()
@@ -124,11 +130,9 @@ namespace TextSearcher
         }
         public int Search()
         {
-            int matchesNumber = 0;
             Regex regex = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant);
             MatchCollection matches = regex.Matches(mainText);
-            matchesNumber += matches.Count;
-            return matchesNumber;
+            return matches.Count;
         }
     }
 }

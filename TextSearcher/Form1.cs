@@ -7,25 +7,24 @@ using Microsoft.WindowsAPICodePack.Dialogs;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Diagnostics;
 
 namespace TextSearcher
 {
-    public partial class Form1 : Form
+    public partial class MainForm : Form
     {
         List<string> allFileNames = null;
-        List<Thread> threads = new List<Thread>();
         double allTime = 0;
         int numberOfCheckedFiles = 0;
         bool isReadyToUpdateScroll = false;
-        int currentMatch = 0, numberOfAllMatches = 0;
-        int numberOfWords = 0;
+        int numberOfAllMatches = 0;
         TextFileWorker textWorker = null;
-        int[] matchIndexes;
-        char[] endCharacters = {' ', '.', ',', '?', '!', '"', ':', '(', ')', ';', '\'', '\n', '\r', '\a', '\b', '\t', '\v', '\f', '»', '«', ' ' };
+        TextNavigator textNavigator = null;
 
-        public Form1()
+        public MainForm()
         {
             InitializeComponent();
+            //CheckForIllegalCrossThreadCalls = false; //debug
         }
 
         private void chooseFilesButton_Click(object sender, EventArgs e)
@@ -82,72 +81,77 @@ namespace TextSearcher
             return allFiles;
         }
 
-        private void Search(List<string> paths)
+        private async void Search(List<string> paths)
         {
-            var watch = new System.Diagnostics.Stopwatch();
-            foreach (string path in paths)
+            await Task.Run(() =>
             {
-                try
+                Stopwatch stopwatch = new Stopwatch();
+                foreach (string path in paths)
                 {
                     scaningProgressBar.Value++;
                     scaningProgressBar2.Value++;
+                    int numberOfMatches = 0;
+
+                    stopwatch = Stopwatch.StartNew();
+                    TextFileWorker worker = new TextFileWorker(path, searchBox.Text);
+                    if (string.IsNullOrWhiteSpace(worker.mainText)) continue;
+
+                    numberOfMatches = worker.Search();
+                    stopwatch.Stop();
+
+                    double elapsedS = CalculateTime(stopwatch);
+                    allTime += elapsedS;
+                    numberOfCheckedFiles++;
+
+                    allTimeLabel.Text = allTime.ToString() + " сек.";
+                    numberOfCheckedFilesLabel.Text = numberOfCheckedFiles.ToString();
+
+                    dataTable.Rows.Add(path, numberOfMatches, elapsedS);
+                    if (numberOfMatches > 0) dataTable.Sort(dataTable.Columns[1], System.ComponentModel.ListSortDirection.Descending);
                 }
-                catch { }
-                
-                watch.Start();
-                long elapsedMs = 0;
-                double elapsedS = 0;
-                int num = 0;
-                TextFileWorker worker = new TextFileWorker(path, searchBox.Text);
-                if (worker.mainText == null) continue;
+            });
+            allTime = Math.Round(allTime, 3);
 
-                num = worker.Search();
-                watch.Stop();
-                elapsedMs = watch.ElapsedMilliseconds;
-                elapsedS = Convert.ToDouble(elapsedMs) / (double)1000;
-                elapsedS = Math.Round(elapsedS, 3);
-                watch.Reset();
+            isReadyToUpdateScroll = true;
+            dataTable.Sort(dataTable.Columns[1], System.ComponentModel.ListSortDirection.Descending);
+            if (!scaningProgressBar2.Visible) SetupRichTextBox(dataTable.Rows[0].Cells[0].Value.ToString());
+            HideProgressBar();
+        }
 
-                allTime += elapsedS;
-                allTime = Math.Round(allTime, 3);
-                numberOfCheckedFiles++;
-
-                allTimeLabel.Text = allTime.ToString() + " сек.";
-                numberOfCheckedFilesLabel.Text = numberOfCheckedFiles.ToString();
-
-                dataTable.Rows.Add(path, num, elapsedS);
-                if(num > 0) dataTable.Sort(dataTable.Columns[1], System.ComponentModel.ListSortDirection.Descending);
-            }
-            try
-            {
-                isReadyToUpdateScroll = true;
-                dataTable.Sort(dataTable.Columns[1], System.ComponentModel.ListSortDirection.Descending);
-                if(!scaningProgressBar2.Visible) SetupRichTextBox(dataTable.Rows[0].Cells[0].Value.ToString());
-            }
-            catch { }
-            if (scaningProgressBar2.Visible == true) scaningProgressBar2.Visible = false;
+        private void HideProgressBar()
+        {
+            if (scaningProgressBar2.Visible) scaningProgressBar2.Visible = false;
             scaningProgressBar.Visible = false;
             scanLabel.Visible = false;
         }
 
+        private static double CalculateTime(Stopwatch stopwatch)
+        {
+            double elapsedS = stopwatch.Elapsed.TotalSeconds;
+            elapsedS = Math.Round(elapsedS, 3);
+            return elapsedS;
+        }
+
         private void FindButton_Click(object sender, EventArgs e)
         {
-            if(searchBox.Text.Length < 3)
+            if (searchBox.Text.Length < 3)
             {
                 MessageBox.Show("Слово должно содержать по крайней мере 3 символа!");
                 return;
             }
-            if(allFileNames == null || allFileNames.Count == 0)
+            if (allFileNames == null || allFileNames.Count == 0)
             {
                 MessageBox.Show("Сначала выберите файл или папку!");
                 return;
             }
+            SetupUI();
+            //dataTable.SuspendLayout();
+            Search(allFileNames);
+            CheckIfReadyToUpdateScrollBar();
+        }
 
-            foreach (Thread thread in threads)
-            {
-                thread.Abort();
-            }
-
+        private void SetupUI()
+        {
             isReadyToUpdateScroll = false;
             fileTextBox.Text = string.Empty;
             scaningProgressBar.Visible = true;
@@ -160,16 +164,6 @@ namespace TextSearcher
             numberOfCheckedFiles = 0;
             allTime = 0;
             dataTable.Rows.Clear();
-            //CheckForIllegalCrossThreadCalls = false; //Debug
-            Thread searchThread = new Thread(() =>
-            {
-                dataTable.SuspendLayout();
-                Search(allFileNames);
-            })
-            { IsBackground = true };
-            threads.Add(searchThread);
-            searchThread.Start();
-            CheckIfReadyToUpdateScrollBar();
         }
 
         private async void CheckIfReadyToUpdateScrollBar()
@@ -180,84 +174,48 @@ namespace TextSearcher
 
         private void NextMatch_Click(object sender, EventArgs e)
         {
-            currentMatch++;
-            UpdateRichTextBox(true);
+            textNavigator.MoveNext();
+            UpdateRichTextBox();
+            matchesLabel.Text = $"{textNavigator.CurrentWordPosition + 1} из {numberOfAllMatches}";
         }
 
         private void PrevMatch_Click(object sender, EventArgs e)
         {
-            currentMatch--;
-            UpdateRichTextBox(false);
+            textNavigator.MoveBack();
+            UpdateRichTextBox();
+            matchesLabel.Text = $"{textNavigator.CurrentWordPosition + 1} из {numberOfAllMatches}";
         }
 
-        private void UpdateRichTextBox(bool wasNext)
+        private void UpdateRichTextBox()
         {
-            bool isEnd = false;
-            int tempNumberOfWords = numberOfWords - 1;
-
-            //creating some kind of loop
-            if (currentMatch >= numberOfAllMatches) { currentMatch = 0; isEnd = true; }
-            else if (currentMatch < 0) { currentMatch = numberOfAllMatches - 1; isEnd = true; }
-
-            int firstIndexOfWord = matchIndexes[currentMatch];
-            if (textWorker.mainText[firstIndexOfWord] == ' ') firstIndexOfWord++;
-            string tempText = textWorker.mainText.Substring(firstIndexOfWord);
-            int lastIndex = tempText.IndexOfAny(endCharacters);
-            if (lastIndex == 0) lastIndex = tempText.IndexOfAny(endCharacters, lastIndex + 1);
-            while (tempNumberOfWords != 0)
+            if(numberOfAllMatches == 0)
             {
-                lastIndex = tempText.IndexOfAny(endCharacters, lastIndex + 1);
-                tempNumberOfWords--;
+                textNavigator.CurrentWordPosition = -1;
+                MessageBox.Show("В данном файле вхождений не обнаружено!", "Text Searcher", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
             }
 
-            fileTextBox.Select(firstIndexOfWord, lastIndex);
+            int wordIndex = textNavigator.CurrentWordIndex;
+            int wordLength = textNavigator.CurrentWordLength;
+
+            fileTextBox.Select(wordIndex, wordLength);
             fileTextBox.SelectionBackColor = Color.Orange;
 
-            if (firstIndexOfWord > 10) firstIndexOfWord -= 10;
-            fileTextBox.Select(firstIndexOfWord, lastIndex);
+            if (wordIndex > 10) wordIndex -= 10; //sub firstIndex to position highlighted word more or less in the center
+            fileTextBox.Select(wordIndex, wordLength);
             fileTextBox.ScrollToCaret();
             fileTextBox.DeselectAll();
 
-            if (isEnd == false)
-            {
-                if (wasNext) firstIndexOfWord = matchIndexes[currentMatch - 1];
-                else firstIndexOfWord = matchIndexes[currentMatch + 1];
-            }
-            else
-            {
-                if (wasNext) firstIndexOfWord = matchIndexes[numberOfAllMatches - 1];
-                else firstIndexOfWord = matchIndexes[0];
-            }
-
-            if (textWorker.mainText[firstIndexOfWord] == ' ') firstIndexOfWord++;
-            tempNumberOfWords = numberOfWords - 1;
-            tempText = textWorker.mainText.Substring(firstIndexOfWord);
-
-            lastIndex = tempText.IndexOfAny(endCharacters);
-            if (lastIndex == 0) lastIndex = tempText.IndexOfAny(endCharacters, lastIndex + 1);
-            while (tempNumberOfWords != 0)
-            {
-                lastIndex = tempText.IndexOfAny(endCharacters, lastIndex + 1);
-                tempNumberOfWords--;
-            }
-
-            fileTextBox.Select(firstIndexOfWord, lastIndex);
+            fileTextBox.Select(textNavigator.PreviousWordIndex, textNavigator.PreviousWordLength);
             fileTextBox.SelectionBackColor = Color.Yellow;
             fileTextBox.DeselectAll();
-
-            matchesLabel.Text = $"{currentMatch + 1} из {numberOfAllMatches}";
         }
 
         private void DataTable_CellClick(object sender, DataGridViewCellEventArgs e)
         {
             if (!isReadyToUpdateScroll) { scaningProgressBar2.Visible = true; scaningProgressBar.Visible = false; scanLabel.Visible = false; }
-            try
-            {
-                string path = dataTable.Rows[e.RowIndex].Cells[0].Value.ToString();
-                SetupRichTextBox(path);
-            }
-            catch { }
-            
+            string path = dataTable.Rows[e.RowIndex].Cells[0].Value.ToString();
+            SetupRichTextBox(path);
         }
 
         private void SearchBox_KeyDown(object sender, KeyEventArgs e)
@@ -267,6 +225,7 @@ namespace TextSearcher
 
         private void SearchBox_TextChanged(object sender, EventArgs e)
         {
+            //validation
             if(Regex.IsMatch(searchBox.Text, @"[^а-яА-Я-\*\?a-zA-Z\-0-9\s\.]"))
             {
                 searchBox.Text = searchBox.Text.Remove(searchBox.Text.Length - 1);
@@ -276,39 +235,26 @@ namespace TextSearcher
 
         private void SetupRichTextBox(string path)
         {
-            numberOfWords = Math.Max(searchBox.Text.Split(' ').Length, searchBox.Text.Split('.').Length);
             textWorker = new TextFileWorker(path, searchBox.Text);
             fileTextBox.Text = textWorker.mainText;
-            matchIndexes = textWorker.GetAllMatchIndexes();
-            numberOfAllMatches = matchIndexes.Length;
-            for(int i = 1; i < numberOfAllMatches; i++)
+            //fileTextBox.Text = textWorker.mainText;
+            List<int> matchIndexes = textWorker.GetAllMatchIndexes();
+            numberOfAllMatches = matchIndexes.Count;
+            if (numberOfAllMatches == 0) return;
+
+            textNavigator = new TextNavigator(textWorker);
+            foreach (int index in matchIndexes)
             {
-                int tempNumberOfWords = numberOfWords - 1;
-                int firstIndexOfWord = matchIndexes[i];
-                if (textWorker.mainText[firstIndexOfWord] == ' ') firstIndexOfWord++;
-
-                string tempText = textWorker.mainText.Substring(firstIndexOfWord);
-
-                int lastIndexOfWord = tempText.IndexOfAny(endCharacters);
-                if (lastIndexOfWord == 0) lastIndexOfWord = tempText.IndexOfAny(endCharacters, lastIndexOfWord + 1);
-                while (tempNumberOfWords != 0)
-                {
-                    lastIndexOfWord = tempText.IndexOfAny(endCharacters, lastIndexOfWord + 1);
-                    tempNumberOfWords--;
-                }
-                fileTextBox.Select(firstIndexOfWord, lastIndexOfWord);
+                fileTextBox.Select(textNavigator.CurrentWordIndex, textNavigator.CurrentWordLength);
                 fileTextBox.SelectionBackColor = Color.Yellow;
                 fileTextBox.DeselectAll();
+                textNavigator.MoveNext();
             }
-            currentMatch = 0;
-            matchesLabel.Text = $"{currentMatch + 1} из {numberOfAllMatches}";
-            if (numberOfAllMatches == 0)
-            {
-                matchesLabel.Text = $"{currentMatch} из {numberOfAllMatches}";
-                return;
-            }
-                
-            UpdateRichTextBox(true);
+            textNavigator.ResetPosition();
+            
+            matchesLabel.Text = numberOfAllMatches == 0 ? $"{textNavigator.CurrentWordPosition} из {numberOfAllMatches}" : $"{textNavigator.CurrentWordPosition + 1} из {numberOfAllMatches}";
+
+            UpdateRichTextBox();
         }
     }
 }
